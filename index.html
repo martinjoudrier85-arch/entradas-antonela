@@ -639,6 +639,46 @@ select.mini-input{ appearance:none; cursor:pointer; }
 
 <div id="toast"></div>
 
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-database-compat.js"></script>
+<script>
+/* ============================================================
+   CONFIGURACIÓN DE FIREBASE — sincronización entre dispositivos
+   ============================================================
+   Para que TODOS los dispositivos vean los mismos datos en tiempo
+   real (no solo el que hace el cambio), necesitás un proyecto
+   gratuito de Firebase Realtime Database. Pasos:
+
+   1) Andá a https://console.firebase.google.com y creá un proyecto
+      (gratis, no pide tarjeta).
+   2) En el menú lateral: "Compilación" → "Realtime Database" →
+      "Crear base de datos". Elegí cualquier ubicación.
+   3) En "Reglas", pegá esto (acceso simple, sin login extra,
+      porque tu app ya tiene su propio login usuario/contraseña):
+        {
+          "rules": { ".read": true, ".write": true }
+        }
+      y publicá.
+   4) En "Configuración del proyecto" (ícono de tuerca) → "General"
+      → "Tus apps" → agregá una app Web (</>) → copiá el objeto
+      firebaseConfig que te muestra y pegalo abajo, reemplazando
+      el que dice "TU_API_KEY".
+   5) Subí este archivo actualizado a GitHub. Desde ese momento
+      todos los dispositivos comparten los mismos datos y se
+      actualizan solos, sin recargar la página.
+
+   Si dejás la configuración sin completar, la app sigue
+   funcionando pero cada dispositivo guarda sus propios datos
+   por separado (como antes).
+*/
+const firebaseConfig = {
+  apiKey: "TU_API_KEY",
+  authDomain: "TU_PROYECTO.firebaseapp.com",
+  databaseURL: "https://TU_PROYECTO-default-rtdb.firebaseio.com",
+  projectId: "TU_PROYECTO",
+};
+</script>
+
 <script>
 /* ============================================================
    CONFIGURACIÓN DE SECTORES Y BUTACAS — Teatro Devoto
@@ -661,7 +701,6 @@ const USERS = [
 ];
 let currentRole = null;
 const STORAGE_KEY = 'entradas-ensayo-general-v1';
-const SHARED = true; // datos compartidos: cualquiera que ingrese ve la misma info
 
 let STATE = { prices:{}, seats:{} };
 let currentSeatId = null;
@@ -684,21 +723,69 @@ function buildDefaultState(){
   return { prices, seats };
 }
 
-/* Guardado: usa localStorage del navegador, que funciona en cualquier sitio
-   (GitHub Pages incluido). Si la app corriera dentro de Claude.ai también
-   podría usar window.storage, pero afuera esa función no existe. */
+/* Guardado compartido: usa Firebase Realtime Database para que
+   todos los dispositivos vean y actualicen los mismos datos en
+   tiempo real. Si Firebase no está configurado (ver arriba), cae
+   en localStorage del navegador, que solo guarda en ese equipo. */
+let fbDb = null;
+let fbConfigured = false;
+try{
+  if(firebaseConfig.apiKey && firebaseConfig.apiKey !== "TU_API_KEY" && typeof firebase !== 'undefined'){
+    firebase.initializeApp(firebaseConfig);
+    fbDb = firebase.database();
+    fbConfigured = true;
+  }
+}catch(e){
+  console.error('No se pudo inicializar Firebase:', e);
+  fbDb = null;
+  fbConfigured = false;
+}
+
+let lastSyncedJSON = null; // para no re-renderizar cuando el cambio remoto es el que acabamos de guardar nosotros mismos
+
 async function storageGet(key){
-  if(typeof window.storage !== 'undefined'){
-    try{ return await window.storage.get(key, SHARED); }catch(e){ /* sigue con localStorage */ }
+  if(fbDb){
+    try{
+      const snap = await fbDb.ref(key).get();
+      const val = snap.exists() ? snap.val() : null;
+      return val ? { value: val } : null;
+    }catch(e){ console.error('Firebase get falló, uso localStorage:', e); }
   }
   const raw = localStorage.getItem(key);
   return raw ? { value: raw } : null;
 }
 async function storageSet(key, value){
-  if(typeof window.storage !== 'undefined'){
-    try{ await window.storage.set(key, value, SHARED); return; }catch(e){ /* sigue con localStorage */ }
+  lastSyncedJSON = value;
+  if(fbDb){
+    try{ await fbDb.ref(key).set(value); return; }
+    catch(e){ console.error('Firebase set falló, uso localStorage:', e); }
   }
   localStorage.setItem(key, value);
+}
+
+/* Escucha cambios hechos desde OTROS dispositivos y refresca la
+   pantalla sola, sin recargar. Ignora el eco de nuestro propio
+   guardado comparando contra el último JSON que enviamos. */
+function subscribeToRemoteChanges(key){
+  if(!fbDb) return;
+  fbDb.ref(key).on('value', (snap)=>{
+    if(!snap.exists()) return;
+    const val = snap.val();
+    if(val === lastSyncedJSON) return; // es nuestro propio cambio, ya está reflejado
+    try{
+      const parsed = JSON.parse(val);
+      const def = buildDefaultState();
+      STATE = {
+        prices: Object.assign({}, def.prices, parsed.prices||{}),
+        seats: Object.assign({}, def.seats, parsed.seats||{})
+      };
+      lastSyncedJSON = val;
+      selectedSeats.clear();
+      renderAll();
+      updateSelectionBar();
+      showToast('Datos actualizados desde otro dispositivo');
+    }catch(e){ console.error('No se pudo aplicar el cambio remoto:', e); }
+  });
 }
 
 async function loadState(){
@@ -712,6 +799,7 @@ async function loadState(){
         prices: Object.assign({}, def.prices, parsed.prices||{}),
         seats: Object.assign({}, def.seats, parsed.seats||{})
       };
+      lastSyncedJSON = res.value;
     } else {
       STATE = buildDefaultState();
       await saveState();
@@ -720,6 +808,7 @@ async function loadState(){
     STATE = buildDefaultState();
     try{ await saveState(); }catch(e2){}
   }
+  subscribeToRemoteChanges(STORAGE_KEY);
 }
 
 async function saveState(){
@@ -729,6 +818,7 @@ async function saveState(){
     showToast('No se pudo guardar. Reintentá.');
   }
 }
+
 
 function showToast(msg){
   const t = document.getElementById('toast');
@@ -753,6 +843,9 @@ document.getElementById('login-form').addEventListener('submit', async (e)=>{
     document.getElementById('app').style.display='block';
     await loadState();
     renderAll();
+    if(!fbConfigured){
+      showToast('Modo local: configurá Firebase para sincronizar entre dispositivos (ver comentario en el código)');
+    }
   } else {
     err.style.display='block';
   }
