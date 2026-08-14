@@ -593,7 +593,11 @@ const SECTORS = [
 ];
 const NIVEL_ORDER = ['Pullman','Platea'];
 
-const AUTH = { user:'Antonela', pass:'Antonela2026' };
+const USERS = [
+  { user:'Antonela', pass:'Antonela2026', role:'admin' },
+  { user:'Antocarga', pass:'Antocarga123', role:'carga' },
+];
+let currentRole = null;
 const STORAGE_KEY = 'entradas-ensayo-general-v1';
 const SHARED = true; // datos compartidos: cualquiera que ingrese ve la misma info
 
@@ -661,8 +665,11 @@ document.getElementById('login-form').addEventListener('submit', async (e)=>{
   const u = document.getElementById('login-user').value.trim();
   const p = document.getElementById('login-pass').value;
   const err = document.getElementById('login-error');
-  if(u === AUTH.user && p === AUTH.pass){
+  const match = USERS.find(x=> x.user===u && x.pass===p);
+  if(match){
     err.style.display='none';
+    currentRole = match.role;
+    applyRole();
     document.getElementById('login-screen').style.display='none';
     document.getElementById('app').style.display='block';
     await loadState();
@@ -676,11 +683,30 @@ document.getElementById('logout-btn').addEventListener('click', ()=>{
   document.getElementById('app').style.display='none';
   document.getElementById('login-screen').style.display='flex';
   document.getElementById('login-pass').value='';
+  currentRole = null;
 });
+
+function applyRole(){
+  const adminTabBtn = document.querySelector('.tab-btn[data-tab="admin"]');
+  const butacasTabBtn = document.querySelector('.tab-btn[data-tab="butacas"]');
+  if(currentRole === 'carga'){
+    adminTabBtn.style.display = 'none';
+    document.getElementById('view-admin').classList.remove('active');
+    document.getElementById('view-butacas').classList.add('active');
+    butacasTabBtn.classList.add('active');
+  } else {
+    adminTabBtn.style.display = '';
+    document.getElementById('view-admin').classList.add('active');
+    document.getElementById('view-butacas').classList.remove('active');
+    adminTabBtn.classList.add('active');
+    butacasTabBtn.classList.remove('active');
+  }
+}
 
 /* ---------------- TABS ---------------- */
 document.querySelectorAll('.tab-btn').forEach(btn=>{
   btn.addEventListener('click', ()=>{
+    if(currentRole==='carga' && btn.dataset.tab==='admin') return;
     document.querySelectorAll('.tab-btn').forEach(b=>b.classList.remove('active'));
     btn.classList.add('active');
     const tab = btn.dataset.tab;
